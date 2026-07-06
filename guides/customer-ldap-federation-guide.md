@@ -111,76 +111,53 @@ below.
 If your organization already operates an OIDC-capable IdP (Azure AD, Okta,
 ADFS, PingFederate, or your own Keycloak), you only need to:
 
-1. Create an application/client registration in your IdP for OSAC
-2. Register it with OSAC using the OSAC identity providers API
+1. Register your IdP with OSAC (which returns the redirect URI)
+2. Create an application/client registration in your IdP using that URI
 
-### Step 1: Create an Application Registration in Your IdP
-
-Create a new OIDC client/application in your IdP with the following settings:
-
-| Setting | Value |
-|---------|-------|
-| **Client type** | Confidential (with client secret) |
-| **Grant type** | Authorization Code |
-| **Redirect URI** | `https://<osac-keycloak-host>/realms/osac/broker/<idp-alias>/endpoint` |
-| **Scopes** | `openid`, `email`, `profile` |
-| **Token format** | JWT (signed, not opaque) |
-
-> **Note:** The exact redirect URI will be provided after you register
-> the identity provider via the OSAC API. The `<idp-alias>` is the Identity
-> Provider alias assigned during registration (e.g., `acme-idp`).
-
-Record the following values — you will use them when registering the IdP
-with OSAC:
-
-| Value | Example |
-|-------|---------|
-| **OIDC Discovery URL** | `https://login.microsoftonline.com/{tenant-id}/v2.0/.well-known/openid-configuration` |
-| **Client ID** | `a1b2c3d4-e5f6-...` |
-| **Client Secret** | `secret-value` |
-| **Domain(s)** | `acme-corp.example.com` |
-
-### Step 2: Ensure LDAP Federation in Your IdP
-
-Your IdP must be configured to authenticate users against your LDAP directory.
-This is specific to your IdP:
-
-| IdP | LDAP Integration Method |
-|-----|------------------------|
-| **Azure AD / Entra ID** | Azure AD Connect or Cloud Sync from on-premises AD |
-| **Okta** | Okta AD Agent or LDAP Agent |
-| **Keycloak** | User Storage Federation (LDAP provider) |
-| **ADFS** | Native Active Directory integration |
-| **PingFederate** | LDAP Data Store |
-| **Authentik** | LDAP Source |
-
-The key requirement is that users authenticating through your IdP are validated
-against your LDAP directory, and the resulting OIDC tokens include the user's
-email address as a claim.
-
-### Step 3: Register Your IdP with OSAC
+### Step 1: Register Your IdP with OSAC
 
 As a tenant administrator, use the
 [OSAC identity providers API](https://github.com/osac-project/fulfillment-service/blob/main/proto/public/osac/public/v1/identity_providers_service.proto)
 to register your IdP. The OSAC administrator will provide you with
 break-glass credentials to get started.
 
-**Via OSAC CLI:**
+First, log in and obtain a token:
 
 ```bash
-osac create identityprovider \
-  --name "acme-corp-idp" \
-  --title "Acme Corp OIDC" \
-  --oidc-issuer "https://your-idp.example.com" \
-  --oidc-authorization-url "https://your-idp.example.com/auth" \
-  --oidc-token-url "https://your-idp.example.com/token" \
-  --oidc-client-id "<your-client-id>" \
-  --oidc-client-secret "<your-client-secret>"
+osac login
+```
+
+Then register the identity provider. You can initially set placeholder
+values for `client_id` and `client_secret` — you will update them after
+creating the client in your IdP (Step 3).
+
+> **Note:** A dedicated `osac create identityprovider` subcommand is
+> planned. In the meantime, use the generic `osac create -f` with a
+> YAML file.
+
+```bash
+osac create -f - <<'EOF'
+"@type": type.googleapis.com/osac.public.v1.IdentityProvider
+metadata:
+  name: acme-corp-idp
+spec:
+  title: Acme Corp OIDC
+  enabled: true
+  oidc:
+    issuer: https://your-idp.example.com
+    authorization_url: https://your-idp.example.com/protocol/openid-connect/auth
+    token_url: https://your-idp.example.com/protocol/openid-connect/token
+    client_id: placeholder
+    client_secret: placeholder
+    default_scopes: openid profile email
+EOF
 ```
 
 **Via OSAC REST API:**
 
 ```bash
+OSAC_TOKEN=$(osac get token)
+
 curl -s -X POST "${OSAC_API}/api/fulfillment/v1/identity_providers" \
     -H "Authorization: Bearer ${OSAC_TOKEN}" \
     -H "Content-Type: application/json" \
@@ -193,18 +170,85 @@ curl -s -X POST "${OSAC_API}/api/fulfillment/v1/identity_providers" \
     "enabled": true,
     "oidc": {
       "issuer": "https://your-idp.example.com",
-      "authorization_url": "https://your-idp.example.com/auth",
-      "token_url": "https://your-idp.example.com/token",
-      "client_id": "<your-client-id>",
-      "client_secret": "<your-client-secret>",
+      "authorization_url": "https://your-idp.example.com/protocol/openid-connect/auth",
+      "token_url": "https://your-idp.example.com/protocol/openid-connect/token",
+      "client_id": "placeholder",
+      "client_secret": "placeholder",
       "default_scopes": "openid profile email"
     }
   }
 }'
 ```
 
-After registration, the OSAC platform will provide the redirect URI to
-configure in your IdP.
+After registration, the OSAC platform returns the redirect URI for your
+IdP. It follows the pattern:
+
+```
+https://<osac-host>/realms/osac/broker/<idp-name>/endpoint
+```
+
+### Step 2: Ensure LDAP Federation in Your IdP
+
+Your IdP must be configured to authenticate users against your LDAP
+directory. This is specific to your IdP:
+
+| IdP | LDAP Integration Method |
+|-----|------------------------|
+| **Azure AD / Entra ID** | Azure AD Connect or Cloud Sync from on-premises AD |
+| **Okta** | Okta AD Agent or LDAP Agent |
+| **Keycloak** | User Storage Federation (LDAP provider) |
+| **ADFS** | Native Active Directory integration |
+| **PingFederate** | LDAP Data Store |
+| **Authentik** | LDAP Source |
+
+The key requirement is that users authenticating through your IdP are
+validated against your LDAP directory, and the resulting OIDC tokens
+include the user's email address as a claim.
+
+### Step 3: Create the OIDC Client in Your IdP
+
+Using the redirect URI from Step 1, create a new OIDC client/application
+in your IdP with the following settings:
+
+| Setting | Value |
+|---------|-------|
+| **Client type** | Confidential (with client secret) |
+| **Grant type** | Authorization Code |
+| **Redirect URI** | The URI returned by OSAC in Step 1 |
+| **Scopes** | `openid`, `email`, `profile` |
+| **Token format** | JWT (signed, not opaque) |
+
+Record the **Client ID** and **Client Secret** generated by your IdP.
+
+### Step 4: Update the OSAC Identity Provider
+
+Update the identity provider you registered in Step 1 with the actual
+client credentials from your IdP:
+
+```bash
+osac edit identityprovider acme-corp-idp
+```
+
+Set `spec.oidc.client_id` and `spec.oidc.client_secret` to the values
+from your IdP.
+
+### Step 5: Verify the Integration
+
+Verify your token contains the correct organization claim:
+
+```bash
+osac get token --payload
+```
+
+You should see:
+
+```json
+{
+  "preferred_username": "alice",
+  "email": "alice@acme-corp.example.com",
+  "organization": ["acme-corp"]
+}
+```
 
 ### What Happens at Login
 
@@ -251,15 +295,29 @@ administrator manages their own identity providers via the OSAC API.
 
 ### Create the Tenant
 
+> **Note:** A dedicated `osac create tenant` subcommand is planned. In the
+> meantime, use the generic `osac create -f` with a YAML file.
+
+Create a file `tenant.yaml`:
+
+```yaml
+"@type": type.googleapis.com/osac.public.v1.Tenant
+metadata:
+  name: acme-corp
+spec:
+  domains:
+    - acme-corp.example.com
+```
+
+Then create the tenant:
+
 ```bash
-osac create tenant acme-corp \
-  --domain acme-corp.example.com
+osac create -f tenant.yaml
 ```
 
 After the tenant is created, provide the tenant administrator with
 break-glass credentials. The tenant administrator then registers their
-IdP using the steps in
-[Option A, Step 3](#step-3-register-your-idp-with-osac).
+IdP using the steps in [Option A](#option-a-register-an-existing-oidc-identity-provider).
 
 ### Verify the Integration
 
@@ -302,8 +360,9 @@ involve the OSAC platform.
 ## Supported Identity Providers
 
 Any OIDC-compliant IdP should work with OSAC. **None of the options below
-have been tested end-to-end with OSAC yet.** They are listed as supported
-based on each product's documented OIDC and LDAP capabilities.
+have been tested end-to-end with OSAC yet.** They are listed as examples
+based on each product's documented OIDC and LDAP capabilities, not as
+recommendations or supported configurations.
 
 ### IdPs with Native LDAP Authentication
 
