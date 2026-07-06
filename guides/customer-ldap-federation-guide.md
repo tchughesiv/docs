@@ -121,13 +121,13 @@ Create a new OIDC client/application in your IdP with the following settings:
 |---------|-------|
 | **Client type** | Confidential (with client secret) |
 | **Grant type** | Authorization Code |
-| **Redirect URI** | `https://<osac-keycloak-host>/realms/osac/broker/<your-org-alias>/endpoint` |
+| **Redirect URI** | `https://<osac-keycloak-host>/realms/osac/broker/<idp-alias>/endpoint` |
 | **Scopes** | `openid`, `email`, `profile` |
 | **Token format** | JWT (signed, not opaque) |
 
 > **Note:** The exact redirect URI will be provided by the OSAC administrator
-> after your organization is registered. The `<your-org-alias>` is typically
-> your organization name in lowercase (e.g., `acme-corp`).
+> after your organization is registered. The `<idp-alias>` is the Identity
+> Provider alias assigned by the OSAC administrator (e.g., `acme-idp`).
 
 Record the following values — you will provide them to the OSAC administrator:
 
@@ -347,25 +347,38 @@ curl -sk -X POST "${KC_URL}/admin/realms/acme-idp/clients" \
   "standardFlowEnabled": true,
   "directAccessGrantsEnabled": false,
   "redirectUris": [
-    "https://<osac-keycloak-host>/realms/osac/broker/<your-org-alias>/endpoint*"
+    "https://<osac-keycloak-host>/realms/osac/broker/<idp-alias>/endpoint*"
   ],
   "defaultClientScopes": ["openid", "email", "profile"]
 }'
 ```
 
 > **Note:** The `redirectUris` value must match the broker endpoint that the
-> OSAC administrator provides. Replace `<your-org-alias>` with the alias
-> assigned to your organization (e.g., `acme-idp`).
+> OSAC administrator provides. Replace `<idp-alias>` with the Identity Provider
+> alias assigned by the OSAC administrator (e.g., `acme-idp`).
 
 ### Step 5: Verify LDAP Authentication
 
-Test that users can authenticate through your Keycloak + LDAP setup:
+The `osac-broker` client uses the Authorization Code flow and does not
+support direct password grants. To verify that LDAP authentication works,
+create a temporary test client with direct access grants enabled:
 
 ```bash
-# Request a token for an LDAP user (direct grant for testing only)
+# Create a temporary test client
+curl -sk -X POST "${KC_URL}/admin/realms/acme-idp/clients" \
+    -H "Authorization: Bearer ${KC_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{
+  "clientId": "ldap-test",
+  "enabled": true,
+  "publicClient": true,
+  "directAccessGrantsEnabled": true,
+  "standardFlowEnabled": false
+}'
+
+# Test LDAP authentication via the test client
 curl -ks "${KC_URL}/realms/acme-idp/protocol/openid-connect/token" \
-    -d 'client_id=osac-broker' \
-    -d 'client_secret=<your-secret>' \
+    -d 'client_id=ldap-test' \
     -d 'grant_type=password' \
     -d 'username=alice' \
     -d 'password=<alice-ldap-password>' | jq .
@@ -386,6 +399,16 @@ If you receive `"error": "invalid_grant"`, verify:
 - Bind DN credentials
 - User DN and search scope
 - User exists in LDAP with the correct `objectClass`
+
+After verification, delete the test client:
+
+```bash
+TEST_CLIENT_ID=$(curl -ks -H "Authorization: Bearer ${KC_TOKEN}" \
+    "${KC_URL}/admin/realms/acme-idp/clients?clientId=ldap-test" | jq -r '.[0].id')
+
+curl -sk -X DELETE "${KC_URL}/admin/realms/acme-idp/clients/${TEST_CLIENT_ID}" \
+    -H "Authorization: Bearer ${KC_TOKEN}"
+```
 
 ### Step 6: Provide Details to the OSAC Administrator
 
@@ -528,14 +551,28 @@ Any OIDC-compliant IdP should work with OSAC. **None of the options below
 have been tested end-to-end with OSAC yet.** They are listed as supported
 based on each product's documented OIDC and LDAP capabilities.
 
-| IdP | LDAP Integration | Reference |
-|-----|-----------------|-----------|
+### IdPs with Native LDAP Authentication
+
+These IdPs can authenticate users directly against an LDAP directory and
+issue OIDC tokens:
+
+| IdP | LDAP Authentication Method | Reference |
+|-----|---------------------------|-----------|
 | **Keycloak** (community or RHBK) | User Storage Federation | [RHBK User Federation](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.6/html/server_administration_guide/user-storage-federation) |
-| **Azure AD / Entra ID** | Azure AD Connect | [Azure AD Connect](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/whatis-azure-ad-connect) |
 | **Okta** | Okta AD Agent / LDAP Agent | [Okta LDAP Agent](https://help.okta.com/en-us/content/topics/directory/ldap-agent-main.htm) |
 | **ADFS** | Native Active Directory | [ADFS Overview](https://learn.microsoft.com/en-us/windows-server/identity/ad-fs/ad-fs-overview) |
 | **PingFederate** | LDAP Data Store | [PingFederate LDAP](https://docs.pingidentity.com/pingfederate/latest/administrators_reference_guide/pf_c_ldapDataStores.html) |
 | **Authentik** (open source) | LDAP Source | [Authentik LDAP](https://docs.goauthentik.io/docs/sources/ldap/) |
+
+### IdPs with Directory Sync (Not Direct LDAP Auth)
+
+These platforms synchronize user data from on-premises directories but do
+not perform LDAP bind authentication directly. They can still serve as
+OIDC IdPs for OSAC after syncing your directory:
+
+| IdP | Sync Method | Reference |
+|-----|------------|-----------|
+| **Azure AD / Entra ID** | Azure AD Connect (syncs AD users to cloud) | [Azure AD Connect](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/whatis-azure-ad-connect) |
 | **Google Workspace** | Google Cloud Directory Sync | [GCDS Overview](https://support.google.com/a/answer/106368) |
 
 ---
