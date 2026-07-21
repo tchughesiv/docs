@@ -12,7 +12,7 @@ prerequisites, host preparation, and operator configuration.
 - [Configuring the operator](#configuring-the-operator)
   - [Inventory Secret](#inventory-secret)
   - [Management Secret](#management-secret)
-  - [Installing or upgrading the operator](#installing-or-upgrading-the-operator)
+
 
 ---
 
@@ -27,11 +27,11 @@ Use the Metal3 backend when:
 
 - Your bare metal hosts are already managed by the OpenShift BareMetalOperator
 - BareMetalHost resources exist in the cluster
-- No external provisioning system (such as OpenStack Ironic) is required
+- No external provisioning system exists
 
-The operator discovers available BareMetalHost resources, assigns them to
-BareMetalInstance requests, and controls power state through the BareMetalHost
-API. An AAP template role handles image provisioning and deprovisioning.
+The operator assigns available BareMetalHost resources to BareMetalInstance
+requests, and controls power state through the BareMetalHost API. An AAP template
+role handles image provisioning and deprovisioning.
 
 ---
 
@@ -39,24 +39,46 @@ API. An AAP template role handles image provisioning and deprovisioning.
 
 Before configuring the Metal3 backend, verify the following:
 
-1. **BareMetalOperator is installed** and the BareMetalHost CRD is registered:
+1. **The `baremetal` cluster capability is enabled.** The Cluster Baremetal
+   Operator (CBO) and the BareMetalOperator (BMO) are deployed by this
+   capability. It is enabled by default, but cluster administrators can disable
+   it during installation. If disabled, the cluster cannot provision or manage
+   bare-metal nodes. See [Viewing the cluster capabilities](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/installation_overview/cluster-capabilities#viewing-cluster-capabilities_cluster-capabilities)
+   and [Enabling additional enabled capabilities](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/installation_overview/cluster-capabilities#enabling-additional-enabled-capabilities_cluster-capabilities)
+   in the OpenShift documentation.
+
+   Verify the capability is enabled:
 
    ```bash
-   oc get crd baremetalhosts.metal3.io
+   oc get clusterversion version \
+     -o jsonpath='{.status.capabilities.enabledCapabilities}' | grep -q baremetal \
+     && echo "enabled" || echo "disabled"
    ```
 
-   The operator validates that the BareMetalHost CRD exists at startup. If the
-   CRD is not installed and Metal3 is configured, the operator will fail to start
-   with an error:
+2. **A Provisioning CR exists with `watchAllNamespaces` enabled.** On
+   installer-provisioned infrastructure (IPI) clusters with `platform: baremetal`,
+   the Provisioning CR is created automatically. On other installation types, you
+   must create it manually. See [Configuring a provisioning resource](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/installing_on_bare_metal/scaling-a-user-provisioned-cluster-with-the-bare-metal-operator#configuring-a-provisioning-resource-to-scale-user-provisioned-clusters_scaling-a-user-provisioned-cluster-with-the-bare-metal-operator)
+   in the OpenShift documentation.
 
-   ```text
-   metal3 backend configured but BareMetalHost CRD is not installed
-   ```
-
-2. **BareMetalOperator is configured to watch all namespaces.** By default, the
-   BareMetalOperator only watches BareMetalHost resources in the
+   By default, the BareMetalOperator only watches BareMetalHost resources in the
    `openshift-machine-api` namespace. OSAC manages hosts in a separate namespace,
-   so `watchAllNamespaces` must be enabled in the Provisioning CR:
+   so `watchAllNamespaces` must be enabled.
+
+   If the Provisioning CR does not exist, create it with `watchAllNamespaces`
+   already enabled:
+
+   ```yaml
+   apiVersion: metal3.io/v1alpha1
+   kind: Provisioning
+   metadata:
+     name: provisioning-configuration
+   spec:
+     provisioningNetwork: "Disabled"
+     watchAllNamespaces: true
+   ```
+
+   If the Provisioning CR already exists, patch it:
 
    ```bash
    oc patch provisioning provisioning-configuration \
@@ -70,14 +92,15 @@ Before configuring the Metal3 backend, verify the following:
      -o jsonpath='{.spec.watchAllNamespaces}{"\n"}'
    ```
 
-3. **BareMetalHost resources are available** in the target namespace:
+3. **BareMetalHost resources are available** in the target namespace. Hosts must
+   be enrolled with BMC credentials and reach the `available` provisioning state
+   before OSAC can assign them. See [Creating a BMC secret](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/installing_on_bare_metal/bare-metal-using-bare-metal-as-a-service#bmo-creating-a-bmc-secret_bare-metal-using-bmaas)
+   and [Creating a bare-metal host resource](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/installing_on_bare_metal/bare-metal-using-bare-metal-as-a-service#bmo-creating-a-bare-metal-host-resource_bare-metal-using-bmaas)
+   in the OpenShift documentation.
 
    ```bash
    oc get baremetalhost -n <namespace>
    ```
-
-   Hosts must have `status.operationalStatus: OK` and
-   `status.provisioning.state: available` to be eligible for assignment.
 
 4. **The bare-metal-fulfillment-operator is deployed.** This guide covers
    configuring it for the Metal3 backend.
@@ -225,27 +248,6 @@ BareMetalHost. When `spec.online` differs from `status.poweredOn`, a power
 transition is in progress and the operator will wait for it to complete before
 issuing a new change.
 
-### Installing or upgrading the operator
-
-After creating the Secrets, install or upgrade OSAC using the helm chart. The
-bare-metal-fulfillment-operator is enabled by default (`bmf.enabled: true`):
-
-```bash
-helm upgrade --install osac charts/osac/ \
-  -f my-values.yaml \
-  -n <operator-namespace>
-```
-
-To customize the Secret names (if not using the defaults), set them in your
-values file:
-
-```yaml
-bmf:
-  secrets:
-    inventoryConfig: "osac-inventory-config"
-    managementConfig: "osac-management-config"
-```
-
 ---
 
 ## References
@@ -254,3 +256,6 @@ bmf:
 - [AAP Provisioning Architecture](../../architecture/aap-provisioning/)
 - [Metal3 Project](https://metal3.io/)
 - [BareMetalHost API Reference](https://github.com/metal3-io/baremetal-operator/blob/main/docs/api.md)
+- [OpenShift: Creating a BMC secret](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/installing_on_bare_metal/bare-metal-using-bare-metal-as-a-service#bmo-creating-a-bmc-secret_bare-metal-using-bmaas) — BMC credential setup for BareMetalHost resources
+- [OpenShift: Creating a bare-metal host resource](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/installing_on_bare_metal/bare-metal-using-bare-metal-as-a-service#bmo-creating-a-bare-metal-host-resource_bare-metal-using-bmaas) — enrolling BareMetalHost resources
+- [OpenShift: Cluster capabilities](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/installation_overview/cluster-capabilities) — viewing and enabling the `baremetal` capability
